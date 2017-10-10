@@ -223,19 +223,18 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) NotifyApplyCh(last_commit int) {
     commitIndex := rf.commitIndex
-    //这里不能设置为异步，因为同一server可能连续调用两次，而config里的检查需要对Index有顺序要求
-    // go func() {
-        for i := last_commit + 1; i <= commitIndex; i++ {
-            DPrintf("[NotifyApplyCh] me:%d push to applyCh, Index:%v Command:%v", rf.me, i, rf.logs[i].Command)
-            rf.applyCh <- ApplyMsg{Index:i, Command:rf.logs[i].Command}
-        }
-    // }()
+    //这里不能设置为异步push数据到rf.applyCh
+    //因为同一server可能连续调用两次，而config里的检查需要对Index有顺序要求
+    for i := last_commit + 1; i <= commitIndex; i++ {
+        DPrintf("[NotifyApplyCh] me:%d push to applyCh, Index:%v Command:%v", rf.me, i, rf.logs[i].Command)
+        rf.applyCh <- ApplyMsg{Index:i, Command:rf.logs[i].Command}
+    }
 }
 
 func (rf *Raft) AppendEntries(request *AppendEntriesArgs, response *AppendEntriesReply) {
-    DPrintf("[AppendEntries] me:%d currentTerm:%v received AppendEntriesArgs:%v rf.logs:%v", rf.me, rf.currentTerm, request, rf.logs)
     rf.mu.Lock()
     defer rf.mu.Unlock()
+    DPrintf("[AppendEntries] me:%d currentTerm:%v received AppendEntriesArgs:%v rf.logs:%v", rf.me, rf.currentTerm, request, rf.logs)
 
     //1. Reply false if term < currentTerm
     if rf.currentTerm > request.Term {
@@ -376,10 +375,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := -1
 	isLeader := true
 
-    DPrintf("[Start] me:%v command:%v rf.role:%v", rf.me, command, rf.role)
 	// Your code here (2B).
     rf.mu.Lock()
     defer rf.mu.Unlock()
+    DPrintf("[Start] me:%v command:%v rf.role:%v", rf.me, command, rf.role)
 
     isLeader = (rf.role == leader)
 
@@ -408,6 +407,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
     DPrintf("[Kill] me:%d", rf.me)
     rf.receivedQuit <- true
 }
@@ -451,8 +452,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
     go rf.CheckMatchIndexAndSetCommitIndex()
 
 	// initialize from state persisted before a crash
-    DPrintf("[Make] me:%d return", rf.me)
 	rf.readPersist(persister.ReadRaftState())
+    DPrintf("[Make] me:%d return", rf.me)
 
 	return rf
 }
