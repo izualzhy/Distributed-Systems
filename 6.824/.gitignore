@@ -1,0 +1,5 @@
+pkg/
+api.key
+*-handin.tar.gz
+cscope.files
+cscope.out

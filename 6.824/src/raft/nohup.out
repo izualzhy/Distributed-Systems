@@ -1,0 +1,65 @@
+++ seq 10000
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:42:35
++ go test -run 2B
++ '[' 0 -ne 0 ']'
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:43:22
++ go test -run 2B
++ '[' 0 -ne 0 ']'
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:44:10
++ go test -run 2B
++ '[' 0 -ne 0 ']'
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:44:59
++ go test -run 2B
++ '[' 0 -ne 0 ']'
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:45:48
++ go test -run 2B
++ '[' 0 -ne 0 ']'
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:46:37
++ go test -run 2B
++ '[' 0 -ne 0 ']'
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:47:23
++ go test -run 2B
++ '[' 0 -ne 0 ']'
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:48:09
++ go test -run 2B
++ '[' 0 -ne 0 ']'
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:48:56
++ go test -run 2B
++ '[' 0 -ne 0 ']'
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:49:43
++ go test -run 2B
++ '[' 0 -ne 0 ']'
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:50:32
++ go test -run 2B
++ '[' 0 -ne 0 ']'
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:51:19
++ go test -run 2B
++ '[' 0 -ne 0 ']'
++ for i in '`seq 10000`'
++ date +%F_%T
+2017-10-10_10:52:06
++ go test -run 2B

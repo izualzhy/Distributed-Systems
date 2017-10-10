@@ -1,0 +1,6 @@
+Failed test. Output should be as in mr-testout.txt. Your output differs as follows (from diff.out):
++ echo ''
+
++ echo '==> Part III'
+==> Part III
++ go test -run TestBasic mapreduce/...

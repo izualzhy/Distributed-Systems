@@ -1,0 +1,32 @@
+==================
+WARNING: DATA RACE
+Read at 0x00c42038a048 by goroutine 17:
+  mapreduce.schedule.func1()
+      /home/users/zhangying21/Training/6.824/src/mapreduce/schedule.go:61 +0x343
+
+Previous write at 0x00c42038a048 by goroutine 13:
+  mapreduce.schedule()
+      /home/users/zhangying21/Training/6.824/src/mapreduce/schedule.go:39 +0x6a6
+  mapreduce.Distributed.func1()
+      /home/users/zhangying21/Training/6.824/src/mapreduce/master.go:112 +0x176
+  mapreduce.(*Master).run()
+      /home/users/zhangying21/Training/6.824/src/mapreduce/master.go:142 +0x239
+
+Goroutine 17 (running) created at:
+  mapreduce.schedule()
+      /home/users/zhangying21/Training/6.824/src/mapreduce/schedule.go:71 +0x676
+  mapreduce.Distributed.func1()
+      /home/users/zhangying21/Training/6.824/src/mapreduce/master.go:112 +0x176
+  mapreduce.(*Master).run()
+      /home/users/zhangying21/Training/6.824/src/mapreduce/master.go:142 +0x239
+
+Goroutine 13 (running) created at:
+  mapreduce.Distributed()
+      /home/users/zhangying21/Training/6.824/src/mapreduce/master.go:117 +0x431
+  mapreduce.setup()
+      /home/users/zhangying21/Training/6.824/src/mapreduce/test_test.go:135 +0xc6
+  mapreduce.TestBasic()
+      /home/users/zhangying21/Training/6.824/src/mapreduce/test_test.go:163 +0x33
+  testing.tRunner()
+      /home/users/zhangying21/.jumbo/lib/go/src/testing/testing.go:657 +0x107
+==================
