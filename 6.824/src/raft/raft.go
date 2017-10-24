@@ -27,7 +27,7 @@ import "bytes"
 import "encoding/gob"
 
 const heart_beat_interval_ms = 100
-const min_election_timeout_ms = 400
+const min_election_timeout_ms = 500
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -59,6 +59,8 @@ type LogEntry struct {
 type ChangeToFollower struct {
     term int
     votedFor int
+    fromRole int
+    isLogEntry bool
 }
 
 type Raft struct {
@@ -93,6 +95,8 @@ type Raft struct {
     //这里我省略了lastApplied，使用matchIndex[rf.me]替代
     matchIndex []int
     applyCh chan ApplyMsg
+
+    followerTimeout *time.Timer
 }
 
 // return currentTerm and whether this server
@@ -196,7 +200,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     }
 
     //2. if votedFor is null or candidateId, and candidate's log is at least as up-to-date as receiver's log, grant vote.
-    //Raft determines which of two logs is ore up-to-date by comparing the index and term of the last entries int the logs.
+    //Raft determines which of two logs is more up-to-date by comparing the index and term of the last entries in the logs.
     //If the logs have last entries with different terms, then the log with the later term is more up-to-date.
     //If the logs end with the same term, then whichever log is longer is more up-to-date.
     lastLogIndex := len(rf.Logs) - 1
@@ -219,7 +223,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     //set currentTerm = T, convert to follower
     if rf.CurrentTerm < args.Term {
         DPrintf("[RequestVote] me:%d changeToFollower:{%v, %v}", rf.me, args.Term, args.CandidateId)
-        rf.PushChangeToFollower(args.Term, args.CandidateId)
+        rf.PushChangeToFollower(args.Term, args.CandidateId, false)
     }
 }
 
@@ -316,7 +320,7 @@ func (rf *Raft) AppendEntries(request *AppendEntriesArgs, response *AppendEntrie
         //if RPC request or response contains term T > currentTerm:
         //set currentTerm = T, convert to follower
         DPrintf("[AppendEntries] me:%d changeToFollower <- {%v, %v} response:%v log_is_less:%v log_dismatch:%v", rf.me, request.Term, request.LeaderId, response, log_is_less, log_dismatch)
-        rf.PushChangeToFollower(request.Term, request.LeaderId)
+        rf.PushChangeToFollower(request.Term, request.LeaderId, true)
     }
     DPrintf("[AppendEntries] me:%d currentTerm:%d votedFor:%d logs:%v", rf.me, rf.CurrentTerm, rf.VotedFor, rf.Logs)
 }
@@ -327,8 +331,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
     return ok
 }
 
-func (rf *Raft) PushChangeToFollower(term int, leaderId int) {
-    rf.changeToFollower <- ChangeToFollower{term, leaderId}
+func (rf *Raft) PushChangeToFollower(term int, leaderId int, isLogEntry bool) {
+    rf.changeToFollower <- ChangeToFollower{term, leaderId, rf.role, isLogEntry}
     <- rf.changeToFollowerDone
 }
 //
@@ -494,9 +498,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+    rf.followerTimeout = time.NewTimer(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
 
     //When servers start up, they begin as followers.
-    go rf.WaitAsFollower()
+    go rf.BeFollower()
     go rf.CheckMatchIndexAndSetCommitIndex()
 
     DPrintf("[Make] me:%d return", rf.me)
@@ -509,8 +514,8 @@ func (rf *Raft) ElectionTimeout() int {
     return r.Intn(min_election_timeout_ms) + min_election_timeout_ms
 }
 
-func (rf *Raft) TransitionToCandidate() {
-    DPrintf("[TransitionToCandidate] me:%v begin.", rf.me)
+func (rf *Raft) BeCandidate() {
+    DPrintf("[BeCandidate] me:%v begin.", rf.me)
     rf.role = candidate
     for {
         vote_ended := make(chan bool, len(rf.peers))
@@ -519,45 +524,49 @@ func (rf *Raft) TransitionToCandidate() {
         select {
         case v := <- rf.changeToFollower:
             //If AppendEntries RPC received from new leader:convert to follower
-            DPrintf("[TransitionToCandidate] me:%d changeToFollower:%v", rf.me, v)
+            DPrintf("[BeCandidate] me:%d changeToFollower:%v", rf.me, v)
             go rf.TransitionToFollower(v)
             return
         case <- rf.receivedQuit:
-            DPrintf("[TransitionToCandidate] me:%d quit", rf.me)
+            DPrintf("[BeCandidate] me:%d quit", rf.me)
             return
         case win := <- vote_ended:
-            DPrintf("[TransitionToCandidate] me:%d CurrentTerm:%v win:%v", rf.me, rf.CurrentTerm, win)
+            DPrintf("[BeCandidate] me:%d CurrentTerm:%v win:%v", rf.me, rf.CurrentTerm, win)
             //If vote received from majority of servers:become leader
             if win {
-                go rf.BecomeLeader()
+                go rf.BeLeader()
                 return
             }
         case <- time.After(time.Duration(rf.ElectionTimeout()) * time.Millisecond):
             //If election timeout elapses:start new election
-            DPrintf("[TransitionToCandidate] election timeout, start new election. me:%v CurrentTerm:%v", rf.me, rf.CurrentTerm)
+            DPrintf("[BeCandidate] election timeout, start new election. me:%v CurrentTerm:%v", rf.me, rf.CurrentTerm)
         }
     }
 }
 
-func (rf *Raft) BecomeLeader() {
+func (rf *Raft) BeLeader() {
+    rf.mu.Lock()
     rf.role = leader
     //When a leader first comes to power
     //it initializes all nextIndex values to the index just after the last one in its log.
     for i := 0; i < len(rf.nextIndex); i++ {
         rf.nextIndex[i] = len(rf.Logs)
     }
+    rf.matchIndex[rf.me] = rf.nextIndex[rf.me] - 1
+    rf.mu.Unlock()
+
     for {
         select {
         case v := <- rf.changeToFollower:
             //turn to follower
-            DPrintf("[BecomeLeader] me:%d changeToFollower:%v", rf.me, v)
+            DPrintf("[BeLeader] me:%d changeToFollower:%v", rf.me, v)
             go rf.TransitionToFollower(v)
             return
         case <- rf.receivedQuit:
-            DPrintf("[BecomeLeader] me:%d quit", rf.me)
+            DPrintf("[BeLeader] me:%d quit", rf.me)
             return
         default:
-            DPrintf("[BecomeLeader] me:%d default", rf.me)
+            DPrintf("[BeLeader] me:%d default", rf.me)
             //Upon election: send initial empty AppendEntries RPCs(heartbeat) to each server;
             //repeat during idle periods to prevent election timeouts.
             rf.SendLogEntryMessageToAll()
@@ -567,30 +576,34 @@ func (rf *Raft) BecomeLeader() {
     }
 }
 
-func (rf* Raft) WaitAsFollower() {
-    DPrintf("[WaitAsFollower] me:%d before for looooooooop", rf.me)
+func (rf* Raft) BeFollower() {
+    DPrintf("[BeFollower] me:%d before for looooooooop", rf.me)
     rf.role = follower
+
     for {
-        DPrintf("[WaitAsFollower] me:%d begin wait select", rf.me)
+        DPrintf("[BeFollower] me:%d begin wait select", rf.me)
 
         select {
         case v := <- rf.changeToFollower:
             //A server remains in follower state as long as it receives valid RPCs from a leader or candidate.
-            // continue WaitAsFollower with another leader(maybe)
-            DPrintf("[WaitAsFollower] me:%d CurrentTerm:%v changeToFollower:%v", rf.me, rf.CurrentTerm, v)
+            // continue BeFollower with another leader(maybe)
+            DPrintf("[BeFollower] me:%d CurrentTerm:%v changeToFollower:%v", rf.me, rf.CurrentTerm, v)
             if v.term > rf.CurrentTerm {
                 go rf.TransitionToFollower(v)
                 return
             }
             rf.changeToFollowerDone <- true
-        case <- time.After(time.Duration(rf.ElectionTimeout()) * time.Millisecond):
+            if v.isLogEntry {
+                rf.followerTimeout.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
+            }
+        case <- rf.followerTimeout.C:
             //If a follower receives no communication over a period of time called the election timeout,
             //then it assumes thers is no viable leader and begins an election to choose a new leader.
-            DPrintf("[WaitAsFollower] me:%d timeout", rf.me)
-            go rf.TransitionToCandidate()
+            DPrintf("[BeFollower] me:%d timeout", rf.me)
+            go rf.BeCandidate()
             return
         case <- rf.receivedQuit:
-            DPrintf("[WaitAsFollower] me:%d quit", rf.me)
+            DPrintf("[BeFollower] me:%d quit", rf.me)
             return
         }
     }
@@ -610,14 +623,18 @@ func (rf *Raft) TransitionToFollower(changeToFollower ChangeToFollower) {
     //注意nextIndex不能设置为len(logs)，比如以下场景：
     //1. 发送AppendEntries时response，转化为follower，此时rf.Logs未修改，nextIndex = len(rf.Logs)
     //2. 接着收到新leader的AppendEntries，可能删减rf.Logs
-    //3. WaitAsFollower里的follower的case v:= <- changeToFollower触发，调用go rf.TransitionToFollower(v)后返回，释放AppendEntries函数里的锁
+    //3. BeFollower里的follower的case v:= <- changeToFollower触发，调用go rf.TransitionToFollower(v)后返回，释放AppendEntries函数里的锁
     //4. makeAppendEntryRequest使用删减后的rf.Logs 与 未修改的nextIndex，可能出错
     //5. go rf.TransitionToFollower(v)异步运行到这里，才设置nextIndex = len(rf.Logs)
     rf.InitNextIndex()
     rf.persist()
     rf.changeToFollowerDone <- true
 
-    rf.WaitAsFollower()
+    if changeToFollower.fromRole != follower || changeToFollower.isLogEntry {
+        rf.followerTimeout.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
+    }
+
+    rf.BeFollower()
 }
 
 func CheckIfWinHalfVote(voted []bool, server_count int) bool {
@@ -730,9 +747,7 @@ func (rf *Raft) SendLogEntryMessageToAll() {
                             //set currentTerm = T, convert to follower.
                             DPrintf("[SendLogEntryMessageToAll] server:%v push change me:%v response:%v currentTerm:%d", server_index, rf.me, response, rf.CurrentTerm)
                             //we don't know who is leader, set -1.
-                            rf.PushChangeToFollower(response.Term, -1)
-                        } else {
-                            DPrintf("This line should not print!!! response:%v rf.CurrentTerm:%v", response, rf.CurrentTerm)
+                            rf.PushChangeToFollower(response.Term, -1, false)
                         }
                     }
                 }
