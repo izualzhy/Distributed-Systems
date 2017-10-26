@@ -1,6 +1,7 @@
 #!/bin/bash
 
-rm res/* -rf
+rm res -rf
+mkdir res
 # case_list=(
 # TestFigure82C
 # )
@@ -42,7 +43,7 @@ rm res/* -rf
     # done
 # done
 
-for i in `seq 10000`
+for i in `seq 1000`
 do
     date +%F_%T
     go test &> res/all.$i

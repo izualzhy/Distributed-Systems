@@ -545,15 +545,24 @@ func (rf *Raft) BeCandidate() {
 }
 
 func (rf *Raft) BeLeader() {
-    rf.mu.Lock()
-    rf.role = leader
-    //When a leader first comes to power
-    //it initializes all nextIndex values to the index just after the last one in its log.
-    for i := 0; i < len(rf.nextIndex); i++ {
-        rf.nextIndex[i] = len(rf.Logs)
-    }
-    rf.matchIndex[rf.me] = rf.nextIndex[rf.me] - 1
-    rf.mu.Unlock()
+    //异步避免 AE/RV里get lock后尝试push channel
+    //而这里尝试getlock后才pop channel
+    go func() {
+        rf.mu.Lock()
+        defer rf.mu.Unlock()
+        if rf.role != candidate {
+            return
+        }
+        //When a leader first comes to power
+        //it initializes all nextIndex values to the index just after the last one in its log.
+        for i := 0; i < len(rf.nextIndex); i++ {
+            rf.nextIndex[i] = len(rf.Logs)
+        }
+        rf.matchIndex[rf.me] = rf.nextIndex[rf.me] - 1
+
+        //放在最后一步，在rf.SendLogEntryMessageToAll前判断是否是leader角色
+        rf.role = leader
+    }()
 
     for {
         select {
@@ -566,12 +575,15 @@ func (rf *Raft) BeLeader() {
             DPrintf("[BeLeader] me:%d quit", rf.me)
             return
         default:
-            DPrintf("[BeLeader] me:%d default", rf.me)
-            //Upon election: send initial empty AppendEntries RPCs(heartbeat) to each server;
-            //repeat during idle periods to prevent election timeouts.
-            rf.SendLogEntryMessageToAll()
-            //Hint: The tester requires that the leader send heartbeat RPCs no more than then times persecond
-            time.Sleep(heart_beat_interval_ms * time.Millisecond)
+            DPrintf("[BeLeader] me:%d default. rf.role:%v", rf.me, rf.role)
+            //等待直到leader状态初始化完成
+            if rf.role == leader {
+                //Upon election: send initial empty AppendEntries RPCs(heartbeat) to each server;
+                //repeat during idle periods to prevent election timeouts.
+                rf.SendLogEntryMessageToAll()
+                //Hint: The tester requires that the leader send heartbeat RPCs no more than then times persecond
+                time.Sleep(heart_beat_interval_ms * time.Millisecond)
+            }
         }
     }
 }
@@ -658,6 +670,13 @@ func (rf *Raft) StartElection(win chan bool) {
     voted := make([]bool, server_count)
 
     rf.mu.Lock()
+
+    //如果拿到锁后发现已经不是candidate，不再发起选举。
+    if rf.role != candidate {
+        rf.mu.Unlock()
+        return
+    }
+
     rf.CurrentTerm++
     rf.VotedFor = rf.me
     rf.persist()
@@ -676,14 +695,14 @@ func (rf *Raft) StartElection(win chan bool) {
             //issues RequestVote RPCs in parallel to each of the other servers in the cluster
             go func(server_index int, voted []bool) {
                 var reply RequestVoteReply
-                DPrintf("[StartElection] sendRequestVote from me:%d to server_index:%d currentTerm:%d", rf.me, server_index, rf.CurrentTerm)
+                DPrintf("[StartElection] sendRequestVote from me:%d to server_index:%d request:%v", rf.me, server_index, request)
                 send_ok := rf.sendRequestVote(server_index, &request, &reply)
                 DPrintf("[StartElection] sendRequestVote from me:%d to server_index:%d currentTerm:%d send_ok:%v reply:%v", rf.me, server_index, rf.CurrentTerm, send_ok, reply)
 
                 voted[server_index] = send_ok && reply.VoteGranted
 
                 if CheckIfWinHalfVote(voted, server_count) {
-                    DPrintf("[StartElection] rf.me:%d voted:%v rf.Logs:%v rf.CurrentTerm:%v", rf.me, voted, rf.Logs, rf.CurrentTerm)
+                    DPrintf("[StartElection] rf.me:%d voted:%v rf.Logs:%v rf.CurrentTerm:%v request:%v", rf.me, voted, rf.Logs, rf.CurrentTerm, request)
                     win <- true
                 }
             }(i, voted)
