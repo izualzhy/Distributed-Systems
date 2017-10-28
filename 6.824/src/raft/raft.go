@@ -59,7 +59,6 @@ type LogEntry struct {
 type ChangeToFollower struct {
     term int
     votedFor int
-    fromRole int
     isLogEntry bool
 }
 
@@ -332,7 +331,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 func (rf *Raft) PushChangeToFollower(term int, leaderId int, isLogEntry bool) {
-    rf.changeToFollower <- ChangeToFollower{term, leaderId, rf.role, isLogEntry}
+    rf.changeToFollower <- ChangeToFollower{term, leaderId, isLogEntry}
     <- rf.changeToFollowerDone
 }
 //
@@ -623,6 +622,7 @@ func (rf* Raft) BeFollower() {
 
 func (rf *Raft) TransitionToFollower(changeToFollower ChangeToFollower) {
     DPrintf("[TransitionToFollower] me:%d enter before lock changeToFollower:%v CurrentTerm:%d", rf.me, changeToFollower, rf.CurrentTerm)
+    fromRole := rf.role
     rf.role = follower
     rf.CurrentTerm = changeToFollower.term
     if changeToFollower.votedFor != -1 {
@@ -642,7 +642,7 @@ func (rf *Raft) TransitionToFollower(changeToFollower ChangeToFollower) {
     rf.persist()
     rf.changeToFollowerDone <- true
 
-    if changeToFollower.fromRole != follower || changeToFollower.isLogEntry {
+    if fromRole != follower || changeToFollower.isLogEntry {
         rf.followerTimeout.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
     }
 
