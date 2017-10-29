@@ -221,7 +221,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     //If RPC request or response contains term T > currentTerm,
     //set currentTerm = T, convert to follower
     if rf.CurrentTerm < args.Term {
-        DPrintf("[RequestVote] me:%d changeToFollower:{%v, %v}", rf.me, args.Term, args.CandidateId)
+        DPrintf("[RequestVote] me:%d changeToFollower:%v, %v", rf.me, args.Term, args.CandidateId)
         rf.PushChangeToFollower(args.Term, args.CandidateId, false)
     }
 }
@@ -318,7 +318,7 @@ func (rf *Raft) AppendEntries(request *AppendEntriesArgs, response *AppendEntrie
 
         //if RPC request or response contains term T > currentTerm:
         //set currentTerm = T, convert to follower
-        DPrintf("[AppendEntries] me:%d changeToFollower <- {%v, %v} response:%v log_is_less:%v log_dismatch:%v", rf.me, request.Term, request.LeaderId, response, log_is_less, log_dismatch)
+        DPrintf("[AppendEntries] me:%d changeToFollower <- %v, %v response:%v log_is_less:%v log_dismatch:%v", rf.me, request.Term, request.LeaderId, response, log_is_less, log_dismatch)
         rf.PushChangeToFollower(request.Term, request.LeaderId, true)
     }
     DPrintf("[AppendEntries] me:%d currentTerm:%d votedFor:%d", rf.me, rf.CurrentTerm, rf.VotedFor)
