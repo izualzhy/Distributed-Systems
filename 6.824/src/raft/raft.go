@@ -27,7 +27,7 @@ import "bytes"
 import "encoding/gob"
 
 const heart_beat_interval_ms = 100
-const min_election_timeout_ms = 500
+const min_election_timeout_ms = 300
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -208,7 +208,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     if args.LastLogTerm < lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex < lastLogIndex) {
         reply.Term = args.Term
         reply.VoteGranted = false
-        DPrintf("[RequestVote] not up-to-date me:%d rf.Logs:%v args:%v", rf.me, rf.Logs, args)
+        DPrintf("[RequestVote] not up-to-date me:%d args:%v", rf.me, args)
     } else if rf.CurrentTerm < args.Term {
         reply.Term = args.Term
         reply.VoteGranted = true
@@ -267,7 +267,7 @@ func (rf *Raft) NotifyApplyCh(last_commit int) {
 func (rf *Raft) AppendEntries(request *AppendEntriesArgs, response *AppendEntriesReply) {
     rf.mu.Lock()
     defer rf.mu.Unlock()
-    DPrintf("[AppendEntries] me:%d currentTerm:%v received AppendEntriesArgs:%v rf.Logs:%v", rf.me, rf.CurrentTerm, request, rf.Logs)
+    DPrintf("[AppendEntries] me:%d currentTerm:%v received AppendEntriesArgs:%v", rf.me, rf.CurrentTerm, request)
 
     //1. Reply false if term < currentTerm
     if rf.CurrentTerm > request.Term {
@@ -321,7 +321,7 @@ func (rf *Raft) AppendEntries(request *AppendEntriesArgs, response *AppendEntrie
         DPrintf("[AppendEntries] me:%d changeToFollower <- {%v, %v} response:%v log_is_less:%v log_dismatch:%v", rf.me, request.Term, request.LeaderId, response, log_is_less, log_dismatch)
         rf.PushChangeToFollower(request.Term, request.LeaderId, true)
     }
-    DPrintf("[AppendEntries] me:%d currentTerm:%d votedFor:%d logs:%v", rf.me, rf.CurrentTerm, rf.VotedFor, rf.Logs)
+    DPrintf("[AppendEntries] me:%d currentTerm:%d votedFor:%d", rf.me, rf.CurrentTerm, rf.VotedFor)
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -621,10 +621,13 @@ func (rf* Raft) BeFollower() {
 }
 
 func (rf *Raft) TransitionToFollower(changeToFollower ChangeToFollower) {
-    DPrintf("[TransitionToFollower] me:%d enter before lock changeToFollower:%v CurrentTerm:%d", rf.me, changeToFollower, rf.CurrentTerm)
-    fromRole := rf.role
+    DPrintf("[TransitionToFollower] me:%d enter before lock changeToFollower:%v CurrentTerm:%d role:%v", rf.me, changeToFollower, rf.CurrentTerm, rf.role)
     rf.role = follower
-    rf.CurrentTerm = changeToFollower.term
+    changeToLargeTerm := false
+    if rf.CurrentTerm < changeToFollower.term {
+        rf.CurrentTerm = changeToFollower.term
+        changeToLargeTerm = true
+    }
     if changeToFollower.votedFor != -1 {
         rf.VotedFor = changeToFollower.votedFor
     }
@@ -642,7 +645,7 @@ func (rf *Raft) TransitionToFollower(changeToFollower ChangeToFollower) {
     rf.persist()
     rf.changeToFollowerDone <- true
 
-    if fromRole != follower || changeToFollower.isLogEntry {
+    if changeToFollower.isLogEntry || changeToLargeTerm {
         rf.followerTimeout.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
     }
 
