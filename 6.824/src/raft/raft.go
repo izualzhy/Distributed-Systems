@@ -59,7 +59,7 @@ type LogEntry struct {
 type ChangeToFollower struct {
     term int
     votedFor int
-    isLogEntry bool
+    shouldResetTimer bool
 }
 
 type Raft struct {
@@ -95,7 +95,7 @@ type Raft struct {
     matchIndex []int
     applyCh chan ApplyMsg
 
-    followerTimeout *time.Timer
+    timeout *time.Timer
 }
 
 // return currentTerm and whether this server
@@ -221,8 +221,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     //If RPC request or response contains term T > currentTerm,
     //set currentTerm = T, convert to follower
     if rf.CurrentTerm < args.Term {
-        DPrintf("[RequestVote] me:%d changeToFollower:%v, %v", rf.me, args.Term, args.CandidateId)
-        rf.PushChangeToFollower(args.Term, args.CandidateId, false)
+        var changeToFollower ChangeToFollower = ChangeToFollower{args.Term ,args.CandidateId, reply.VoteGranted}
+        DPrintf("[RequestVote] me:%d changeToFollower:%v", rf.me, changeToFollower)
+        rf.PushChangeToFollower(changeToFollower)
     }
 }
 
@@ -318,8 +319,9 @@ func (rf *Raft) AppendEntries(request *AppendEntriesArgs, response *AppendEntrie
 
         //if RPC request or response contains term T > currentTerm:
         //set currentTerm = T, convert to follower
-        DPrintf("[AppendEntries] me:%d changeToFollower <- %v, %v response:%v log_is_less:%v log_dismatch:%v", rf.me, request.Term, request.LeaderId, response, log_is_less, log_dismatch)
-        rf.PushChangeToFollower(request.Term, request.LeaderId, true)
+        var changeToFollower ChangeToFollower = ChangeToFollower{request.Term, request.LeaderId, true}
+        DPrintf("[AppendEntries] me:%v changeToFollower:%v response:%v log_is_less:%v log_dismatch:%v", rf.me, changeToFollower, response, log_is_less, log_dismatch)
+        rf.PushChangeToFollower(changeToFollower)
     }
     DPrintf("[AppendEntries] me:%d currentTerm:%d votedFor:%d", rf.me, rf.CurrentTerm, rf.VotedFor)
 }
@@ -330,8 +332,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
     return ok
 }
 
-func (rf *Raft) PushChangeToFollower(term int, leaderId int, isLogEntry bool) {
-    rf.changeToFollower <- ChangeToFollower{term, leaderId, isLogEntry}
+func (rf *Raft) PushChangeToFollower(changeToFollower ChangeToFollower) {
+    rf.changeToFollower <- changeToFollower
     <- rf.changeToFollowerDone
 }
 //
@@ -497,7 +499,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-    rf.followerTimeout = time.NewTimer(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
+    rf.timeout = time.NewTimer(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
 
     //When servers start up, they begin as followers.
     go rf.BeFollower()
@@ -519,6 +521,7 @@ func (rf *Raft) BeCandidate() {
     for {
         vote_ended := make(chan bool, len(rf.peers))
         go rf.StartElection(vote_ended)
+        rf.timeout.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
 
         select {
         case v := <- rf.changeToFollower:
@@ -536,7 +539,7 @@ func (rf *Raft) BeCandidate() {
                 go rf.BeLeader()
                 return
             }
-        case <- time.After(time.Duration(rf.ElectionTimeout()) * time.Millisecond):
+        case <- rf.timeout.C:
             //If election timeout elapses:start new election
             DPrintf("[BeCandidate] election timeout, start new election. me:%v CurrentTerm:%v", rf.me, rf.CurrentTerm)
         }
@@ -604,10 +607,10 @@ func (rf* Raft) BeFollower() {
                 return
             }
             rf.changeToFollowerDone <- true
-            if v.isLogEntry {
-                rf.followerTimeout.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
+            if v.shouldResetTimer {
+                rf.timeout.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
             }
-        case <- rf.followerTimeout.C:
+        case <- rf.timeout.C:
             //If a follower receives no communication over a period of time called the election timeout,
             //then it assumes thers is no viable leader and begins an election to choose a new leader.
             DPrintf("[BeFollower] me:%d timeout", rf.me)
@@ -621,12 +624,10 @@ func (rf* Raft) BeFollower() {
 }
 
 func (rf *Raft) TransitionToFollower(changeToFollower ChangeToFollower) {
-    DPrintf("[TransitionToFollower] me:%d enter before lock changeToFollower:%v CurrentTerm:%d role:%v", rf.me, changeToFollower, rf.CurrentTerm, rf.role)
+    DPrintf("[TransitionToFollower] me:%d changeToFollower:%v CurrentTerm:%d role:%v", rf.me, changeToFollower, rf.CurrentTerm, rf.role)
     rf.role = follower
-    changeToLargeTerm := false
     if rf.CurrentTerm < changeToFollower.term {
         rf.CurrentTerm = changeToFollower.term
-        changeToLargeTerm = true
     }
     if changeToFollower.votedFor != -1 {
         rf.VotedFor = changeToFollower.votedFor
@@ -645,8 +646,8 @@ func (rf *Raft) TransitionToFollower(changeToFollower ChangeToFollower) {
     rf.persist()
     rf.changeToFollowerDone <- true
 
-    if changeToFollower.isLogEntry || changeToLargeTerm {
-        rf.followerTimeout.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
+    if changeToFollower.shouldResetTimer {
+        rf.timeout.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
     }
 
     rf.BeFollower()
@@ -767,9 +768,10 @@ func (rf *Raft) SendLogEntryMessageToAll() {
                         } else if response.Term > rf.CurrentTerm {
                             //If RPC request or response contains term T > currentTerm
                             //set currentTerm = T, convert to follower.
-                            DPrintf("[SendLogEntryMessageToAll] server:%v push change me:%v response:%v currentTerm:%d", server_index, rf.me, response, rf.CurrentTerm)
+                            var changeToFollower ChangeToFollower = ChangeToFollower{response.Term, -1, false}
+                            DPrintf("[SendLogEntryMessageToAll] me:%v currentTerm:%v changeToFollower:%v by server:%v response:%v", rf.me, rf.CurrentTerm, changeToFollower, server_index, response)
                             //we don't know who is leader, set -1.
-                            rf.PushChangeToFollower(response.Term, -1, false)
+                            rf.PushChangeToFollower(changeToFollower)
                         }
                     }
                 }
