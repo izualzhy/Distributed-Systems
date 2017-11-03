@@ -280,7 +280,7 @@ func (rf *Raft) AppendEntries(request *AppendEntriesArgs, response *AppendEntrie
         log_is_less := log_len < request.PrevLogIndex + 1
         log_dismatch := !log_is_less && request.PrevLogIndex > 0 && (rf.Logs[request.PrevLogIndex].Term != request.PrevLogTerm)
         if log_is_less || log_dismatch {
-            response.Term = rf.CurrentTerm
+            response.Term = request.Term
             response.Success = false
 
             if log_is_less {
@@ -313,7 +313,7 @@ func (rf *Raft) AppendEntries(request *AppendEntriesArgs, response *AppendEntrie
             }
             rf.NotifyApplyCh(last_commit_index);
 
-            response.Term = rf.CurrentTerm
+            response.Term = request.Term
             response.Success = true
         }
 
@@ -374,9 +374,10 @@ func (rf *Raft) makeAppendEntryRequest(server_index int) (*AppendEntriesArgs, in
     rf.mu.Lock()
     defer rf.mu.Unlock()
 
-    if rf.role == follower {
+    if rf.role != leader {
         return nil, -1
     }
+
     newLogEntryStartIndex := rf.nextIndex[server_index]
     endIndex := len(rf.Logs)
 
@@ -560,7 +561,8 @@ func (rf *Raft) BeLeader() {
         for i := 0; i < len(rf.nextIndex); i++ {
             rf.nextIndex[i] = len(rf.Logs)
         }
-        rf.matchIndex[rf.me] = rf.nextIndex[rf.me] - 1
+        //首先rf.matchIndex[rf.me]需要和rf.nextIndex[rf.me]一致，否则只有当调用Start时才更新rf.nextIndex[rf.me]
+        rf.matchIndex[rf.me] = len(rf.Logs) - 1
 
         //放在最后一步，在rf.SendLogEntryMessageToAll前判断是否是leader角色
         rf.role = leader
@@ -580,7 +582,7 @@ func (rf *Raft) BeLeader() {
             DPrintf("[BeLeader] me:%d default. rf.role:%v", rf.me, rf.role)
             //等待直到leader状态初始化完成
             if rf.role == leader {
-                //Upon election: send initial empty AppendEntries RPCs(heartbeat) to each server;
+                //Upon election: send initial empty AppendEntries RPCs(heartbeat) to each server;(这里我发送的可能不是empty)
                 //repeat during idle periods to prevent election timeouts.
                 rf.SendLogEntryMessageToAll()
                 //Hint: The tester requires that the leader send heartbeat RPCs no more than then times persecond
@@ -715,9 +717,9 @@ func (rf *Raft) StartElection(win chan bool) {
 }
 
 func (rf *Raft) HandleInconsistency(server_index int, response *AppendEntriesReply) {
-    rf.mu.Lock()
     DPrintf("[HandleInconsistency] before log inconsistency: me:%d server_index:%d rf.nextIndex:%v", rf.me, server_index, rf.nextIndex)
 
+    rf.mu.Lock()
     nextIndex := -1
     for j := 1; j < len(rf.Logs) - 1; j++ {
         if rf.Logs[j].Term == response.Term && rf.Logs[j + 1].Term != response.Term {
@@ -730,8 +732,8 @@ func (rf *Raft) HandleInconsistency(server_index int, response *AppendEntriesRep
     } else {
         rf.nextIndex[server_index] = nextIndex
     }
-    DPrintf("[HandleInconsistency] after log inconsistency: me:%d server_index:%d rf.nextIndex:%v", rf.me, server_index, rf.nextIndex)
     rf.mu.Unlock()
+    DPrintf("[HandleInconsistency] after log inconsistency: me:%d server_index:%d rf.nextIndex:%v", rf.me, server_index, rf.nextIndex)
 }
 
 func (rf *Raft) SendLogEntryMessageToAll() {
@@ -754,7 +756,11 @@ func (rf *Raft) SendLogEntryMessageToAll() {
                 DPrintf("[SendLogEntryMessageToAll] from me:%d to server_index:%d request:%v", rf.me, server_index, request)
                 send_ok := rf.sendAppendEntries(server_index, request, &response)
 
-                if send_ok {
+                rf.mu.Lock()
+                sameTerm := (request.Term == rf.CurrentTerm)
+                rf.mu.Unlock()
+                //判断request.Term == rf.CurrentTerm，避免是之前term 的RPCResponse
+                if send_ok && sameTerm {
                     //If successful: update nextIndex and matchIndex for follower.
                     if response.Success {
                         rf.nextIndex[server_index] = max_log_entry_index
